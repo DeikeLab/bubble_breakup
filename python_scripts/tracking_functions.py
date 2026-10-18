@@ -403,7 +403,7 @@ def find_candidates(frame0, frame1, dt, C_V, C_X, box, event_types, gate=None, o
     return out
 #
 # ------------------------------------------------------------------
-# Event organization: minimum-cost exact cover (Sec. 5)
+# Event organization: minimum-cost exact cover
 # ------------------------------------------------------------------
 #
 def reduce_problem(enodes, k):
