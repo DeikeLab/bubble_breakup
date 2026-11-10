@@ -34,12 +34,12 @@ double mu1_in = 1.0;
 int FORCED = 1;
 int MAX_LEVEL = 1;
 int MIN_LEVEL = 1;
-double end_sim = 1.0;
+double t_end = 1.0;
 double t_phy = 1.0;
 int single_ph = 1;
 int do_restart_tw = 1;
 int do_ens = 1;
-double t_ie = 1.0;
+double t_ed = 1.0;
 int input_ens = 1;
 
 /**
@@ -81,7 +81,7 @@ int main (int argc, char * argv[]) {
   if (argc > 7)
     MIN_LEVEL = atoi(argv[7]);
   if (argc > 8)
-    end_sim  = atof(argv[8]);
+    t_end  = atof(argv[8]);
   if (argc > 9)
     t_phy = atof(argv[9]);
   if (argc > 10)
@@ -91,7 +91,7 @@ int main (int argc, char * argv[]) {
   if (argc > 12)
     do_ens = atoi(argv[12]);
   if (argc > 13)
-    t_ie = atof(argv[13]);
+    t_ed = atof(argv[13]);
   if (argc > 14)
     input_ens = atoi(argv[14]);
   
@@ -105,19 +105,19 @@ int main (int argc, char * argv[]) {
   fprintf(stderr, "************************\n"), fflush (stderr);
   fprintf(stderr, "maximum runtime = %.10e seconds\n", _maxruntime), fflush (stderr);
   fprintf(stderr, "Check of input parameters only\n"), fflush (stderr);
-  fprintf(stderr, " R0 = %.10e\n ", R0), fflush (stderr);
-  fprintf(stderr, " sigma  = %.10e\n ", SIGMA), fflush (stderr);
+  fprintf(stderr, " Initial radius = %.10e\n ", R0), fflush (stderr);
+  fprintf(stderr, " Surface tension = %.10e\n ", SIGMA), fflush (stderr);
   fprintf(stderr, " amp_force = %.10e\n ", amp_force), fflush (stderr);
   fprintf(stderr, " mu1_in = %.10e\n ", mu1_in), fflush (stderr);
   fprintf(stderr, " FORCED = %d\n ", FORCED), fflush (stderr);
   fprintf(stderr, " MAXLEVEL = %d\n ", MAX_LEVEL), fflush (stderr);
   fprintf(stderr, " MINLEVEL = %d\n ", MIN_LEVEL), fflush (stderr);
-  fprintf(stderr, " tend  = %.10e\n ", end_sim), fflush (stderr);
+  fprintf(stderr, " tend  = %.10e\n ", t_end), fflush (stderr);
   fprintf(stderr, " t_phy = %.10e\n ", t_phy), fflush (stderr);
   fprintf(stderr, " single_ph = %d\n ", single_ph), fflush (stderr);
   fprintf(stderr, " do_restart_tw = %d\n ", do_restart_tw), fflush (stderr);
   fprintf(stderr, " do_ens = %d\n ", do_ens), fflush (stderr);
-  fprintf(stderr, " t_ie = %.10e\n ", t_ie), fflush (stderr);
+  fprintf(stderr, " Eddy-turnover time = %.10e\n ", t_ed), fflush (stderr);
   fprintf(stderr, " input_ens = %d\n ", input_ens), fflush (stderr);
   fprintf(stderr, "************************\n"), fflush (stderr);
   
@@ -198,19 +198,19 @@ event init (i = 0) {
 
   fprintf(stderr, "************************\n"), fflush (stderr);
   fprintf(stderr, "A-posteriori check of simulation parameters\n"), fflush (stderr);
-  fprintf(stderr, " R0 = %.10e\n ", R0), fflush (stderr);
-  fprintf(stderr, " sigma = %.10e\n ", SIGMA), fflush (stderr);
+  fprintf(stderr, " Initial radius = %.10e\n ", R0), fflush (stderr);
+  fprintf(stderr, " Surface tension = %.10e\n ", SIGMA), fflush (stderr);
   fprintf(stderr, " amp_force = %.10e\n ", amp_force), fflush (stderr);
   fprintf(stderr, " mu1_in = %.10e\n ", mu1_in), fflush (stderr);
   fprintf(stderr, " FORCED = %d\n ", FORCED), fflush (stderr);
   fprintf(stderr, " MAXLEVEL = %d\n ", MAX_LEVEL), fflush (stderr);
   fprintf(stderr, " MINLEVEL = %d\n ", MIN_LEVEL), fflush (stderr);
-  fprintf(stderr, " tend  = %.10e\n ", end_sim), fflush (stderr);
+  fprintf(stderr, " tend  = %.10e\n ", t_end), fflush (stderr);
   fprintf(stderr, " t_phy = %.10e\n ", t_phy), fflush (stderr);
   fprintf(stderr, " single_ph = %d\n ", single_ph), fflush (stderr);
   fprintf(stderr, " do_restart_tw = %d\n ", do_restart_tw), fflush (stderr);
   fprintf(stderr, " do_ens = %d\n ", do_ens), fflush (stderr);
-  fprintf(stderr, " t_ie = %.10e\n ", t_ie), fflush (stderr);
+  fprintf(stderr, " Eddy-turnover time = %.10e\n ", t_ed), fflush (stderr);
   fprintf(stderr, " input_ens = %d\n ", input_ens), fflush (stderr);
   fprintf(stderr, " Oh = %.10e\n ", mu1/sqrt(rho1*SIGMA*(2.*R0))), fflush (stderr);
   fprintf(stderr, "************************\n"), fflush (stderr);
@@ -451,7 +451,7 @@ event adapt (i++) {
 /** 
    Dump every fraction of t_phy */
 
-event dumpstep (t = 0.0; t <= end_sim; t += t_phy/t_out_dpst) {
+event dumpstep (t = 0.0; t <= t_end; t += t_phy/t_out_dpst) {
   
   if(counter < counter_max) {
     counter++;
@@ -493,9 +493,9 @@ event dumpstep (t = 0.0; t <= end_sim; t += t_phy/t_out_dpst) {
 }
 
 /** 
-   Dump every t_ie to perform ensemble simulations */
+   Dump every t_ed to perform ensemble simulations */
 
-event dump_ens (t = 0.0; t <= end_sim; t += t_ie) {
+event dump_ens (t = 0.0; t <= t_end; t += t_ed) {
 
   if(do_ens == 1) {	
     
@@ -528,7 +528,7 @@ event dump_ens (t = 0.0; t <= end_sim; t += t_ie) {
 /** 
    Dump every fraction of t_phy the restart bk */
 
-event dump_backup (t = 0.0; t <= end_sim; t += t_phy/t_out_dpbk) {
+event dump_backup (t = 0.0; t <= t_end; t += t_phy/t_out_dpbk) {
 
   char dname[100];
   sprintf (dname, "./restart_bk/dump_%09d.bin", i);
@@ -539,7 +539,7 @@ event dump_backup (t = 0.0; t <= end_sim; t += t_phy/t_out_dpbk) {
 /** 
    Tagging */
 
-//event tagging (t = 0.0; t <= end_sim; t += t_phy/t_out_tag) {
+//event tagging (t = 0.0; t <= t_end; t += t_phy/t_out_tag) {
 event tagging (i++) {
 
   if (single_ph == 0) {
@@ -562,7 +562,7 @@ event tagging (i++) {
 /** 
    Interface */
 
-//event interface (t = 0.0; t <= end_sim; t += t_phy/t_out_tag) {
+//event interface (t = 0.0; t <= t_end; t += t_phy/t_out_tag) {
 event interface (i += 250) {
 
   if (single_ph == 0) {
@@ -596,12 +596,11 @@ event interface (i += 250) {
 }
 
 /**
-   We generate a movie of the vortices. 
-   Commented lines are optional alternative outputs.*/
+   We generate a movie to check everything is good!*/
 
 #define POPEN(name, mode) fopen (name ".ppm", mode)
 
-event movie (t = 0.0; t <= end_sim; t += t_phy/t_out_mov) {
+event movie (t = 0.0; t <= t_end; t += t_phy/t_out_mov) {
 
   vector omg[];
   scalar omg_mod[];
@@ -652,9 +651,9 @@ event movie (t = 0.0; t <= end_sim; t += t_phy/t_out_mov) {
 /**
 ## End 
 
-   We want to run up "end_sim" physical time. */
+   We want to run up t_end. */
 
-event end (t = end_sim) {
+event end (t = t_end) {
 
   dump ("end.bin");
 

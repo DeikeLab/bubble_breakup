@@ -5,6 +5,20 @@
 # define ORPHAN_TOL 1e-6
 #endif
 //
+// Axisymmetric runs (axi.h), countDropsBubble_app_v2 only: dv() is the
+// volume per radian, and the interface area and the error estimates are
+// weighted in the same way. Volume, area and volume errors are written
+// multiplied by 2 pi (values of the 3D DPS), the centroid and the velocity
+// of each DPS lie on the axis (y = 0), and the curvature of an interface
+// cell is bounded with the 3D value D - 1 = 2.
+#if AXI
+# define AXI_FACTOR (2.*pi)
+# define D_PHYS 3.
+#else
+# define AXI_FACTOR 1.
+# define D_PHYS dimension
+#endif
+//
 static void restriction_tag_max (Point point, scalar s) {
   double m = 0.;
   foreach_child()
@@ -35,12 +49,14 @@ static int nearest_tag (Point point, scalar m, int n)
 // Original formulation:
 //  - volume, centroid and velocity summed over the tagged cells only
 //    (c >= 0.5 for droplets, c < 0.5 for bubbles; no nearest_tag)
-//  - first-order interfacial volume and momentum error estimates only
+//  - first-order interfacial volume error estimate only
 //  - collective (MPI-safe) allocation check
-// Output columns (0-based) in name_2 / name_3:
+// Output columns (0-based) in name_2 / name_3 (only what the tracking uses):
 //   0 t, 1 istep, 2 j, 3 V, 4 A, 5-7 centroid, 8-10 velocity,
-//   11-13 dx min/max/avg, 14-16 level min/max/avg, 17 ncells,
-//   18 dV_err (1st order), 19 dP_err (1st order)
+//   11 dx max, 12 dV_err (1st order),
+//   13 extent = max over the interfacial cells of |x_c - x_i| + sqrt(D)/2 Delta,
+//      i.e. the radius of the smallest sphere centred at the centroid
+//      that contains the DPS (contact test of the tracking)
 // ============================================================
 //
 void countDropsBubble_app_v1 (char *name_1, char *name_2, char *name_3,
@@ -93,34 +109,20 @@ void countDropsBubble_app_v1 (char *name_1, char *name_2, char *name_3,
   double *dA1 = (n1 > 0) ? calloc(n1, sizeof(double)) : NULL;
   double *dA2 = (n2 > 0) ? calloc(n2, sizeof(double)) : NULL;
 
-  // Interfacial momentum errors - first order
-  double *dP1 = (n1 > 0) ? calloc(n1, sizeof(double)) : NULL;
-  double *dP2 = (n2 > 0) ? calloc(n2, sizeof(double)) : NULL;
+  // Extent: max |x_c - x_i| + sqrt(D)/2 Delta over the interfacial cells
+  double *ext1 = (n1 > 0) ? calloc(n1, sizeof(double)) : NULL;
+  double *ext2 = (n2 > 0) ? calloc(n2, sizeof(double)) : NULL;
 
   // AMR/grid information
-  double *dx1_min = (n1 > 0) ? calloc(n1, sizeof(double)) : NULL;
   double *dx1_max = (n1 > 0) ? calloc(n1, sizeof(double)) : NULL;
-  double *dx1_avg = (n1 > 0) ? calloc(n1, sizeof(double)) : NULL;
-  double *lev1_min = (n1 > 0) ? calloc(n1, sizeof(double)) : NULL;
-  double *lev1_max = (n1 > 0) ? calloc(n1, sizeof(double)) : NULL;
-  double *lev1_avg = (n1 > 0) ? calloc(n1, sizeof(double)) : NULL;
-  double *ncells1  = (n1 > 0) ? calloc(n1, sizeof(double)) : NULL;
 
-  double *dx2_min = (n2 > 0) ? calloc(n2, sizeof(double)) : NULL;
   double *dx2_max = (n2 > 0) ? calloc(n2, sizeof(double)) : NULL;
-  double *dx2_avg = (n2 > 0) ? calloc(n2, sizeof(double)) : NULL;
-  double *lev2_min = (n2 > 0) ? calloc(n2, sizeof(double)) : NULL;
-  double *lev2_max = (n2 > 0) ? calloc(n2, sizeof(double)) : NULL;
-  double *lev2_avg = (n2 > 0) ? calloc(n2, sizeof(double)) : NULL;
-  double *ncells2  = (n2 > 0) ? calloc(n2, sizeof(double)) : NULL;
 
   // Allocation check: decided collectively so all ranks leave together (no MPI deadlock)
   int alloc_ok = !((n1 > 0 && (!v1 || !c1x || !c1y || !c1z || !u1x || !u1y || !u1z || !area1 ||
-                  !dA1 || !dP1 || !dx1_min || !dx1_max || !dx1_avg ||
-                  !lev1_min || !lev1_max || !lev1_avg || !ncells1)) ||
+                  !dA1 || !dx1_max || !ext1)) ||
       (n2 > 0 && (!v2 || !c2x || !c2y || !c2z || !u2x || !u2y || !u2z || !area2 ||
-                  !dA2 || !dP2 || !dx2_min || !dx2_max || !dx2_avg ||
-                  !lev2_min || !lev2_max || !lev2_avg || !ncells2)));
+                  !dA2 || !dx2_max || !ext2)));
 
   if (!alloc_ok) {
     fprintf(stderr, "countDropsBubble_app_v1: allocation failed on pid %d\n", pid());
@@ -142,27 +144,14 @@ void countDropsBubble_app_v1 (char *name_1, char *name_2, char *name_3,
 
     free(area1); free(area2);
     free(dA1); free(dA2);
-    free(dP1); free(dP2);
+    free(ext1); free(ext2);
 
-    free(dx1_min); free(dx1_max); free(dx1_avg);
-    free(lev1_min); free(lev1_max); free(lev1_avg); free(ncells1);
+    free(dx1_max);
 
-    free(dx2_min); free(dx2_max); free(dx2_avg);
-    free(lev2_min); free(lev2_max); free(lev2_avg); free(ncells2);
+    free(dx2_max);
 
     delete({m1, m2});
     return;
-  }
-
-  // Initialise minima only after the allocation check (no NULL dereference)
-  for (int j = 0; j < n1; j++) {
-    dx1_min[j] = HUGE;
-    lev1_min[j] = HUGE;
-  }
-
-  for (int j = 0; j < n2; j++) {
-    dx2_min[j] = HUGE;
-    lev2_min[j] = HUGE;
   }
 
   // Loops to compute volumetric quantities (tagged cells only)
@@ -184,15 +173,7 @@ void countDropsBubble_app_v1 (char *name_1, char *name_2, char *name_3,
         u1y[j] += vol*u.y[];
         u1z[j] += vol*u.z[];
 
-        dx1_min[j] = min(dx1_min[j], Delta);
         dx1_max[j] = max(dx1_max[j], Delta);
-        dx1_avg[j] += vol*Delta;
-
-        lev1_min[j] = min(lev1_min[j], (double)level);
-        lev1_max[j] = max(lev1_max[j], (double)level);
-        lev1_avg[j] += vol*(double)level;
-
-        ncells1[j] += 1.;
       }
     }
 
@@ -211,18 +192,27 @@ void countDropsBubble_app_v1 (char *name_1, char *name_2, char *name_3,
         u2y[j] += vol*u.y[];
         u2z[j] += vol*u.z[];
 
-        dx2_min[j] = min(dx2_min[j], Delta);
         dx2_max[j] = max(dx2_max[j], Delta);
-        dx2_avg[j] += vol*Delta;
-
-        lev2_min[j] = min(lev2_min[j], (double)level);
-        lev2_max[j] = max(lev2_max[j], (double)level);
-        lev2_avg[j] += vol*(double)level;
-
-        ncells2[j] += 1.;
       }
     }
   }
+
+  // The extent needs each DPS's centroid inside the interface loop, so
+  // volume and centroid moments are reduced here.
+#ifdef _MPI
+  if (n1 > 0) {
+    MPI_Allreduce(MPI_IN_PLACE, v1,  n1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, c1x, n1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, c1y, n1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, c1z, n1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+  }
+  if (n2 > 0) {
+    MPI_Allreduce(MPI_IN_PLACE, v2,  n2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, c2x, n2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, c2y, n2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, c2z, n2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+  }
+#endif
 
   // Interface quantities for bubbles/droplets using existing m1, m2 tags
   foreach(serial) {
@@ -232,14 +222,12 @@ void countDropsBubble_app_v1 (char *name_1, char *name_2, char *name_3,
       coord n = interface_normal(point, c), p;
       double alpha = plane_alpha(c[], n);
       double Ac = pow(Delta, dimension - 1)*plane_area_center(n, alpha, &p);
-      double vel2 = 0.;
-      foreach_dimension() {
-        vel2 += sq(u.x[]);
-      }
-
+      // cell centre and half diagonal: bound of the distance of any point
+      // of the cell (and of its interface) from that centre
+      coord oc0 = {x, y, z};
+      double half_diag = 0.5*sqrt((double)dimension)*Delta;
       // First-order error contribution
       double dVc = Ac*Delta;
-      double dPc = sqrt(vel2)*dVc;
 
       // Define PLIC coordinates in the interfacial cells
       coord oi = {x,y,z};
@@ -279,7 +267,11 @@ void countDropsBubble_app_v1 (char *name_1, char *name_2, char *name_3,
         int q = tag1 - 1;
         area1[q] += Ac;
         dA1[q]   += dVc;
-        dP1[q]   += dPc;
+        if (v1[q] > 0.) {
+          double r = sqrt(sq(oc0.x - c1x[q]/v1[q]) + sq(oc0.y - c1y[q]/v1[q]) +
+                          sq(oc0.z - c1z[q]/v1[q])) + half_diag;
+          ext1[q] = max(ext1[q], r);
+        }
       }
 
       // Bubble owners
@@ -287,7 +279,11 @@ void countDropsBubble_app_v1 (char *name_1, char *name_2, char *name_3,
         int q = tag2 - 1;
         area2[q] += Ac;
         dA2[q]   += dVc;
-        dP2[q]   += dPc;
+        if (v2[q] > 0.) {
+          double r = sqrt(sq(oc0.x - c2x[q]/v2[q]) + sq(oc0.y - c2y[q]/v2[q]) +
+                          sq(oc0.z - c2z[q]/v2[q])) + half_diag;
+          ext2[q] = max(ext2[q], r);
+        }
       }
 
     }
@@ -298,53 +294,27 @@ void countDropsBubble_app_v1 (char *name_1, char *name_2, char *name_3,
 
 #ifdef _MPI
   if (n1 > 0) {
-    MPI_Allreduce(MPI_IN_PLACE, v1,  n1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-
-    MPI_Allreduce(MPI_IN_PLACE, c1x, n1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-    MPI_Allreduce(MPI_IN_PLACE, c1y, n1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-    MPI_Allreduce(MPI_IN_PLACE, c1z, n1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-
     MPI_Allreduce(MPI_IN_PLACE, u1x, n1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, u1y, n1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, u1z, n1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 
-    MPI_Allreduce(MPI_IN_PLACE, dx1_min, n1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, dx1_max, n1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
-    MPI_Allreduce(MPI_IN_PLACE, dx1_avg, n1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 
-    MPI_Allreduce(MPI_IN_PLACE, lev1_min, n1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
-    MPI_Allreduce(MPI_IN_PLACE, lev1_max, n1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
-    MPI_Allreduce(MPI_IN_PLACE, lev1_avg, n1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-
-    MPI_Allreduce(MPI_IN_PLACE, ncells1, n1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, area1, n1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, dA1, n1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-    MPI_Allreduce(MPI_IN_PLACE, dP1, n1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, ext1, n1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
   }
 
   if (n2 > 0) {
-    MPI_Allreduce(MPI_IN_PLACE, v2,  n2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-
-    MPI_Allreduce(MPI_IN_PLACE, c2x, n2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-    MPI_Allreduce(MPI_IN_PLACE, c2y, n2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-    MPI_Allreduce(MPI_IN_PLACE, c2z, n2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-
     MPI_Allreduce(MPI_IN_PLACE, u2x, n2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, u2y, n2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, u2z, n2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 
-    MPI_Allreduce(MPI_IN_PLACE, dx2_min, n2, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, dx2_max, n2, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
-    MPI_Allreduce(MPI_IN_PLACE, dx2_avg, n2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 
-    MPI_Allreduce(MPI_IN_PLACE, lev2_min, n2, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
-    MPI_Allreduce(MPI_IN_PLACE, lev2_max, n2, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
-    MPI_Allreduce(MPI_IN_PLACE, lev2_avg, n2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-
-    MPI_Allreduce(MPI_IN_PLACE, ncells2, n2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, area2, n2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, dA2, n2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-    MPI_Allreduce(MPI_IN_PLACE, dP2, n2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, ext2, n2, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
   }
 #endif
 
@@ -368,15 +338,11 @@ void countDropsBubble_app_v1 (char *name_1, char *name_2, char *name_3,
                   "%.10e %d %d %.10e %.10e "
                   "%.10e %.10e %.10e "
                   "%.10e %.10e %.10e "
-                  "%.10e %.10e %.10e "
-                  "%.10e %.10e %.10e %.10e "
-                  "%.10e %.10e\n",
+                  "%.10e %.10e %.10e\n",
                   t, istep, j, v1[j], area1[j],
                   c1x[j]/v1[j], c1y[j]/v1[j], c1z[j]/v1[j],
                   u1x[j]/v1[j], u1y[j]/v1[j], u1z[j]/v1[j],
-                  dx1_min[j], dx1_max[j], dx1_avg[j]/v1[j],
-                  lev1_min[j], lev1_max[j], lev1_avg[j]/v1[j], ncells1[j],
-                  dA1[j], dP1[j]);
+                  dx1_max[j], dA1[j], ext1[j]);
         }
       }
       fclose(fdrop);
@@ -392,15 +358,11 @@ void countDropsBubble_app_v1 (char *name_1, char *name_2, char *name_3,
                   "%.10e %d %d %.10e %.10e "
                   "%.10e %.10e %.10e "
                   "%.10e %.10e %.10e "
-                  "%.10e %.10e %.10e "
-                  "%.10e %.10e %.10e %.10e "
-                  "%.10e %.10e\n",
+                  "%.10e %.10e %.10e\n",
                   t, istep, j, v2[j], area2[j],
                   c2x[j]/v2[j], c2y[j]/v2[j], c2z[j]/v2[j],
                   u2x[j]/v2[j], u2y[j]/v2[j], u2z[j]/v2[j],
-                  dx2_min[j], dx2_max[j], dx2_avg[j]/v2[j],
-                  lev2_min[j], lev2_max[j], lev2_avg[j]/v2[j], ncells2[j],
-                  dA2[j], dP2[j]);
+                  dx2_max[j], dA2[j], ext2[j]);
         }
       }
       fclose(fbubb);
@@ -416,32 +378,32 @@ void countDropsBubble_app_v1 (char *name_1, char *name_2, char *name_3,
   free(u1x); free(u1y); free(u1z);
   free(u2x); free(u2y); free(u2z);
 
-  free(dx1_min); free(dx1_max); free(dx1_avg);
-  free(lev1_min); free(lev1_max); free(lev1_avg); free(ncells1);
-  free(dA1); free(dP1);
+  free(dx1_max);
+  free(dA1); free(ext1);
 
-  free(dx2_min); free(dx2_max); free(dx2_avg);
-  free(lev2_min); free(lev2_max); free(lev2_avg); free(ncells2);
-  free(dA2); free(dP2);
+  free(dx2_max);
+  free(dA2); free(ext2);
 }
 //
 // ============================================================
 // countDropsBubble_app_v2
 // Current formulation:
 //  - sub-threshold interfacial volume attributed with nearest_tag
-//  - first-order and blended (Eq. 5) volume error estimates
-//  - centroid error estimate: first-moment bound (paper, Eq. 9)
+//  - first-order and blended (curvature-based) volume error estimates
+//  - centroid error estimate: first-moment bound
 // All error estimates are written WITHOUT calibration constants, i.e.
-// they are the hatted quantities of the paper: multiply by C_V (volume)
+// they are uncalibrated estimates: multiply by C_V (volume)
 // or C_X (position) in post-processing.
-// Local interface error (paper, Eq. 5 and Eq. 9):
+// Local interface error:
 //   |delta_c| = Delta*min(|kappa_c| Delta, D - 1),
 //   with |kappa_c| Delta replaced by D - 1 where kappa is nodata.
-// Output columns (0-based) in name_2 / name_3:
+// Output columns (0-based) in name_2 / name_3 (only what the tracking uses):
 //   0 t, 1 istep, 2 j, 3 V, 4 A, 5-7 centroid, 8-10 velocity,
-//   11-13 dx min/max/avg, 14-16 level min/max/avg, 17 ncells,
-//   18 dV_err (1st, Eq. 3), 19 dV_err (blended, Eq. 5),
-//   20 dX_err = (1/V) sum A_c |delta_c| |x_c - x_i|   (Eq. 9)
+//   11 dx max, 12 dV_err (first order), 13 dV_err (blended),
+//   14 dX_err = (1/V) sum A_c |delta_c| |x_c - x_i|,
+//   15 extent = max over the interfacial cells of |x_c - x_i| + sqrt(D)/2 Delta,
+//      i.e. the radius of the smallest sphere centred at the centroid
+//      that contains the DPS (contact test of the tracking)
 // ============================================================
 //
 void countDropsBubble_app_v2 (char *name_1, char *name_2, char *name_3,
@@ -490,42 +452,32 @@ void countDropsBubble_app_v2 (char *name_1, char *name_2, char *name_3,
   double *area1 = (n1 > 0) ? calloc(n1, sizeof(double)) : NULL;
   double *area2 = (n2 > 0) ? calloc(n2, sizeof(double)) : NULL;
   
-  // Volume errors - first order (Eq. 3)
+  // Volume errors - first order
   double *dA1_1 = (n1 > 0) ? calloc(n1, sizeof(double)) : NULL;
   double *dA2_1 = (n2 > 0) ? calloc(n2, sizeof(double)) : NULL;
 
-  // Volume errors - blended (Eq. 5)
+  // Volume errors - blended
   double *dA1_2 = (n1 > 0) ? calloc(n1, sizeof(double)) : NULL;
   double *dA2_2 = (n2 > 0) ? calloc(n2, sizeof(double)) : NULL;
 
-  // Centroid position error (paper, Eq. 9): sum A_c |delta_c| |x_c - x_i|
+  // Centroid position error: sum A_c |delta_c| |x_c - x_i|
   double *xe1 = (n1 > 0) ? calloc(n1, sizeof(double)) : NULL;
   double *xe2 = (n2 > 0) ? calloc(n2, sizeof(double)) : NULL;
 
-  // AMR/grid information
-  double *dx1_min = (n1 > 0) ? calloc(n1, sizeof(double)) : NULL;
-  double *dx1_max = (n1 > 0) ? calloc(n1, sizeof(double)) : NULL;
-  double *dx1_avg = (n1 > 0) ? calloc(n1, sizeof(double)) : NULL;
-  double *lev1_min = (n1 > 0) ? calloc(n1, sizeof(double)) : NULL;
-  double *lev1_max = (n1 > 0) ? calloc(n1, sizeof(double)) : NULL;
-  double *lev1_avg = (n1 > 0) ? calloc(n1, sizeof(double)) : NULL;
-  double *ncells1  = (n1 > 0) ? calloc(n1, sizeof(double)) : NULL;
+  // Extent: max |x_c - x_i| + sqrt(D)/2 Delta over the interfacial cells
+  double *ext1 = (n1 > 0) ? calloc(n1, sizeof(double)) : NULL;
+  double *ext2 = (n2 > 0) ? calloc(n2, sizeof(double)) : NULL;
 
-  double *dx2_min = (n2 > 0) ? calloc(n2, sizeof(double)) : NULL;
+  // AMR/grid information
+  double *dx1_max = (n1 > 0) ? calloc(n1, sizeof(double)) : NULL;
+
   double *dx2_max = (n2 > 0) ? calloc(n2, sizeof(double)) : NULL;
-  double *dx2_avg = (n2 > 0) ? calloc(n2, sizeof(double)) : NULL;
-  double *lev2_min = (n2 > 0) ? calloc(n2, sizeof(double)) : NULL;
-  double *lev2_max = (n2 > 0) ? calloc(n2, sizeof(double)) : NULL;
-  double *lev2_avg = (n2 > 0) ? calloc(n2, sizeof(double)) : NULL;
-  double *ncells2  = (n2 > 0) ? calloc(n2, sizeof(double)) : NULL;
 
   // Allocation check: decided collectively so all ranks leave together (no MPI deadlock)
   int alloc_ok = !((n1 > 0 && (!v1 || !c1x || !c1y || !c1z || !u1x || !u1y || !u1z || !area1 ||
-                  !dA1_1 || !dA1_2 || !dx1_min || !dx1_max || !dx1_avg ||
-                  !lev1_min || !lev1_max || !lev1_avg || !ncells1 || !xe1)) ||
+                  !dA1_1 || !dA1_2 || !dx1_max || !xe1 || !ext1)) ||
       (n2 > 0 && (!v2 || !c2x || !c2y || !c2z || !u2x || !u2y || !u2z || !area2 ||
-                  !dA2_1 || !dA2_2 || !dx2_min || !dx2_max || !dx2_avg ||
-                  !lev2_min || !lev2_max || !lev2_avg || !ncells2 || !xe2)));
+                  !dA2_1 || !dA2_2 || !dx2_max || !xe2 || !ext2)));
 
   if (!alloc_ok) {
     fprintf(stderr, "countDropsBubble_app_v2: allocation failed on pid %d\n", pid());
@@ -549,27 +501,15 @@ void countDropsBubble_app_v2 (char *name_1, char *name_2, char *name_3,
     free(dA1_1); free(dA2_1);
     free(dA1_2); free(dA2_2);
 
-    free(dx1_min); free(dx1_max); free(dx1_avg);
-    free(lev1_min); free(lev1_max); free(lev1_avg); free(ncells1);
+    free(dx1_max);
 
-    free(dx2_min); free(dx2_max); free(dx2_avg);
-    free(lev2_min); free(lev2_max); free(lev2_avg); free(ncells2);
+    free(dx2_max);
 
     free(xe1); free(xe2);
+    free(ext1); free(ext2);
 
     delete({m1, m2});
     return;
-  }
-
-  // Initialise minima only after the allocation check (no NULL dereference)
-  for (int j = 0; j < n1; j++) {
-    dx1_min[j] = HUGE;
-    lev1_min[j] = HUGE;
-  }
-
-  for (int j = 0; j < n2; j++) {
-    dx2_min[j] = HUGE;
-    lev2_min[j] = HUGE;
   }
 
   // Loops to compute volumetric quantities.
@@ -597,15 +537,8 @@ void countDropsBubble_app_v2 (char *name_1, char *name_2, char *name_3,
         u1y[j] += vol*u.y[];
         u1z[j] += vol*u.z[];
 
-        if (m1[] > 0) { // grid statistics only over the tagged cells
-          dx1_min[j] = min(dx1_min[j], Delta);
+        if (m1[] > 0) // largest cell size over the tagged cells
           dx1_max[j] = max(dx1_max[j], Delta);
-          lev1_min[j] = min(lev1_min[j], (double)level);
-          lev1_max[j] = max(lev1_max[j], (double)level);
-          ncells1[j] += 1.;
-        }
-        dx1_avg[j]  += vol*Delta;
-        lev1_avg[j] += vol*(double)level;
       }
       else
         orphan1 += vol;
@@ -626,15 +559,8 @@ void countDropsBubble_app_v2 (char *name_1, char *name_2, char *name_3,
         u2y[j] += vol*u.y[];
         u2z[j] += vol*u.z[];
 
-        if (m2[] > 0) {
-          dx2_min[j] = min(dx2_min[j], Delta);
+        if (m2[] > 0) // largest cell size over the tagged cells
           dx2_max[j] = max(dx2_max[j], Delta);
-          lev2_min[j] = min(lev2_min[j], (double)level);
-          lev2_max[j] = max(lev2_max[j], (double)level);
-          ncells2[j] += 1.;
-        }
-        dx2_avg[j]  += vol*Delta;
-        lev2_avg[j] += vol*(double)level;
       }
       else
         orphan2 += vol;
@@ -660,6 +586,12 @@ void countDropsBubble_app_v2 (char *name_1, char *name_2, char *name_3,
     MPI_Allreduce(MPI_IN_PLACE, c2y, n2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, c2z, n2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
   }
+#endif
+
+#if AXI
+  // the centroid of an axisymmetric DPS is on the axis
+  for (int j = 0; j < n1; j++) c1y[j] = 0.;
+  for (int j = 0; j < n2; j++) c2y[j] = 0.;
 #endif
 
   // Volume conservation check: orphan/(tagged + orphan) is the fraction of
@@ -688,16 +620,20 @@ void countDropsBubble_app_v2 (char *name_1, char *name_2, char *name_3,
       coord n = interface_normal(point, c), p;
       double alpha = plane_alpha(c[], n);
       double Ac = pow(Delta, dimension - 1)*plane_area_center(n, alpha, &p);
-      // First-order error contribution (paper, Eq. 3, without C_V)
+      // cell centre and half diagonal: bound of the distance of any point
+      // of the cell (and of its interface) from that centre
+      coord oc0 = {x, y, z};
+      double half_diag = 0.5*sqrt((double)dimension)*Delta;
+      // First-order error contribution (without C_V)
       double dVc_1 = Ac*Delta;
 
-      // Blended error contribution (paper, Eq. 5, without C_V):
+      // Blended error contribution (without C_V):
       //   |delta_c| = Delta*min(|kappa| Delta, D - 1).
       // Where kappa is undefined, |kappa| Delta is replaced by D - 1, i.e.
       // the saturated value of the clipped branch, so the estimate is
       // continuous between the two branches.
       double kD = (kappa[] != nodata) ?
-        min(fabs(kappa[])*Delta, dimension - 1.) : dimension - 1.;
+        min(fabs(kappa[])*Delta, D_PHYS - 1.) : D_PHYS - 1.;
       double delta_c = Delta*kD;
       double dVc_2 = Ac*delta_c;
       
@@ -706,6 +642,12 @@ void countDropsBubble_app_v2 (char *name_1, char *name_2, char *name_3,
       foreach_dimension() {
 	oi.x += p.x*Delta;
       }
+#if AXI
+      // per radian, as dv() = y Delta^2
+      Ac *= oi.y;
+      dVc_1 *= oi.y;
+      dVc_2 *= oi.y;
+#endif
   
       // Define the points not at the PLIC interface where 0<=c<=1  
       int tag1 = 0;
@@ -740,10 +682,12 @@ void countDropsBubble_app_v2 (char *name_1, char *name_2, char *name_3,
         area1[q]  += Ac;
         dA1_1[q]  += dVc_1;
         dA1_2[q]  += dVc_2;
-        if (v1[q] > 0.) { // paper, Eq. 9: A_c |delta_c| |x_c - x_i|
+        if (v1[q] > 0.) { // A_c |delta_c| |x_c - x_i|
           coord xc = {c1x[q]/v1[q], c1y[q]/v1[q], c1z[q]/v1[q]};
           double r = sqrt(sq(oi.x - xc.x) + sq(oi.y - xc.y) + sq(oi.z - xc.z));
           xe1[q] += dVc_2*r;
+          double re = sqrt(sq(oc0.x - xc.x) + sq(oc0.y - xc.y) + sq(oc0.z - xc.z)) + half_diag;
+          ext1[q] = max(ext1[q], re);
         }
       }
       else
@@ -755,10 +699,12 @@ void countDropsBubble_app_v2 (char *name_1, char *name_2, char *name_3,
         area2[q]  += Ac;
         dA2_1[q]  += dVc_1;
         dA2_2[q]  += dVc_2;
-        if (v2[q] > 0.) { // paper, Eq. 9: A_c |delta_c| |x_c - x_i|
+        if (v2[q] > 0.) { // A_c |delta_c| |x_c - x_i|
           coord xc = {c2x[q]/v2[q], c2y[q]/v2[q], c2z[q]/v2[q]};
           double r = sqrt(sq(oi.x - xc.x) + sq(oi.y - xc.y) + sq(oi.z - xc.z));
           xe2[q] += dVc_2*r;
+          double re = sqrt(sq(oc0.x - xc.x) + sq(oc0.y - xc.y) + sq(oc0.z - xc.z)) + half_diag;
+          ext2[q] = max(ext2[q], re);
         }
       }
       else
@@ -776,19 +722,13 @@ void countDropsBubble_app_v2 (char *name_1, char *name_2, char *name_3,
     MPI_Allreduce(MPI_IN_PLACE, u1y, n1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, u1z, n1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 
-    MPI_Allreduce(MPI_IN_PLACE, dx1_min, n1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, dx1_max, n1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
-    MPI_Allreduce(MPI_IN_PLACE, dx1_avg, n1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 
-    MPI_Allreduce(MPI_IN_PLACE, lev1_min, n1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
-    MPI_Allreduce(MPI_IN_PLACE, lev1_max, n1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
-    MPI_Allreduce(MPI_IN_PLACE, lev1_avg, n1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-
-    MPI_Allreduce(MPI_IN_PLACE, ncells1, n1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, area1, n1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, dA1_1, n1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, dA1_2, n1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, xe1, n1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, ext1, n1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
   }
 
   if (n2 > 0) {
@@ -796,19 +736,13 @@ void countDropsBubble_app_v2 (char *name_1, char *name_2, char *name_3,
     MPI_Allreduce(MPI_IN_PLACE, u2y, n2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, u2z, n2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 
-    MPI_Allreduce(MPI_IN_PLACE, dx2_min, n2, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, dx2_max, n2, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
-    MPI_Allreduce(MPI_IN_PLACE, dx2_avg, n2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 
-    MPI_Allreduce(MPI_IN_PLACE, lev2_min, n2, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
-    MPI_Allreduce(MPI_IN_PLACE, lev2_max, n2, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
-    MPI_Allreduce(MPI_IN_PLACE, lev2_avg, n2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-
-    MPI_Allreduce(MPI_IN_PLACE, ncells2, n2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, area2, n2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, dA2_1, n2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, dA2_2, n2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, xe2, n2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, ext2, n2, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
   }
 #endif
 
@@ -829,6 +763,11 @@ void countDropsBubble_app_v2 (char *name_1, char *name_2, char *name_3,
               t, orphanA1, fracA1, orphanA2, fracA2);
   }
   
+
+#if AXI
+  for (int j = 0; j < n1; j++) u1y[j] = 0.;
+  for (int j = 0; j < n2; j++) u2y[j] = 0.;
+#endif
 
   if (pid() == 0) {
     FILE *ftot = fopen(name_1, "a");
@@ -851,16 +790,13 @@ void countDropsBubble_app_v2 (char *name_1, char *name_2, char *name_3,
                   "%.10e %.10e %.10e "
                   "%.10e %.10e %.10e "
                   "%.10e %.10e %.10e "
-                  "%.10e %.10e %.10e %.10e "
-                  "%.10e %.10e "
-                  "%.10e\n",
-                  t, istep, j, v1[j], area1[j], 
+                  "%.10e %.10e\n",
+                  t, istep, j, AXI_FACTOR*v1[j], AXI_FACTOR*area1[j], 
                   c1x[j]/v1[j], c1y[j]/v1[j], c1z[j]/v1[j],
                   u1x[j]/v1[j], u1y[j]/v1[j], u1z[j]/v1[j],
-                  dx1_min[j], dx1_max[j], dx1_avg[j]/v1[j],
-                  lev1_min[j], lev1_max[j], lev1_avg[j]/v1[j], ncells1[j],
-                  dA1_1[j], dA1_2[j],
-                  xe1[j]/v1[j]);
+                  dx1_max[j],
+                  AXI_FACTOR*dA1_1[j], AXI_FACTOR*dA1_2[j],
+                  xe1[j]/v1[j], ext1[j]);
         }
       }
       fclose(fdrop);
@@ -877,16 +813,13 @@ void countDropsBubble_app_v2 (char *name_1, char *name_2, char *name_3,
                   "%.10e %.10e %.10e "
                   "%.10e %.10e %.10e "
                   "%.10e %.10e %.10e "
-                  "%.10e %.10e %.10e %.10e "
-                  "%.10e %.10e "
-                  "%.10e\n",
-                  t, istep, j, v2[j], area2[j],
+                  "%.10e %.10e\n",
+                  t, istep, j, AXI_FACTOR*v2[j], AXI_FACTOR*area2[j],
                   c2x[j]/v2[j], c2y[j]/v2[j], c2z[j]/v2[j],
                   u2x[j]/v2[j], u2y[j]/v2[j], u2z[j]/v2[j],
-                  dx2_min[j], dx2_max[j], dx2_avg[j]/v2[j],
-                  lev2_min[j], lev2_max[j], lev2_avg[j]/v2[j], ncells2[j],
-                  dA2_1[j], dA2_2[j],
-                  xe2[j]/v2[j]);
+                  dx2_max[j],
+                  AXI_FACTOR*dA2_1[j], AXI_FACTOR*dA2_2[j],
+                  xe2[j]/v2[j], ext2[j]);
         }
       }
       fclose(fbubb);
@@ -910,14 +843,13 @@ void countDropsBubble_app_v2 (char *name_1, char *name_2, char *name_3,
   free(u1x); free(u1y); free(u1z);
   free(u2x); free(u2y); free(u2z);
 
-  free(dx1_min); free(dx1_max); free(dx1_avg);
-  free(lev1_min); free(lev1_max); free(lev1_avg); free(ncells1);
+  free(dx1_max);
   free(dA1_1); free(dA1_2);
 
-  free(dx2_min); free(dx2_max); free(dx2_avg);
-  free(lev2_min); free(lev2_max); free(lev2_avg); free(ncells2);
+  free(dx2_max);
   free(dA2_1); free(dA2_2);
   free(xe1); free(xe2);
+  free(ext1); free(ext2);
   
 }
 
