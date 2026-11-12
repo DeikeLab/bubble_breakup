@@ -229,7 +229,7 @@ event init (i = 0) {
   system(comm);
   sprintf (comm, "mkdir -p tagging_v1");
   system(comm);
-  sprintf (comm, "mkdir -p tagging_v2");
+  sprintf (comm, "mkdir -p tagging");
   system(comm);
 
   /**
@@ -550,9 +550,9 @@ event tagging (i++) {
     sprintf (name_3, "./tagging_v1/bubbles_f1.out");
     countDropsBubble_app_v1 (name_1, name_2, name_3, i, f, u);
     
-    sprintf (name_1, "./tagging_v2/num_bubbles_droplets_f1.out");
-    sprintf (name_2, "./tagging_v2/droplets_f1.out");
-    sprintf (name_3, "./tagging_v2/bubbles_f1.out");
+    sprintf (name_1, "./tagging/num_bubbles_droplets_f1.out");
+    sprintf (name_2, "./tagging/droplets_f1.out");
+    sprintf (name_3, "./tagging/bubbles_f1.out");
     countDropsBubble_app_v2 (name_1, name_2, name_3, i, f, u);
 
   }
