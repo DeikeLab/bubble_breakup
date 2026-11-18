@@ -11,6 +11,7 @@
 #include "sandbox/maxruntime.h"
 #include "sandbox/perfs.h"
 #include "sandbox/my_funcs.h"
+#include "sandbox/facets_output.h"
 
 /**
    Include density and viscosity ratios.*/
@@ -563,24 +564,20 @@ event tagging (i++) {
    Interface */
 
 //event interface (t = 0.0; t <= t_end; t += t_phy/t_out_tag) {
-event interface (i += 250) {
+//event interface (i += 250) {
+/**
+   Compact binary interface output (sandbox/facets_output.h): one file per
+   output step, interface/plic_<istep>.bin, with the PLIC centroid, normal
+   and area of every interfacial cell (float32); written by all ranks into
+   the same file (serial or MPI). */
+
+event interface (i += 5) {
 
   if (single_ph == 0) {
 
-    char names[80];
-    sprintf (names, "interfaces_%d", pid());
-    FILE * fpf = fopen (names,"w");
-    output_facets (f, fpf);
-    fclose (fpf);
-    MPI_Barrier(MPI_COMM_WORLD);
-
-    if (pid() == 0) {
-      char command[512]; // bigger buffer!
-      sprintf(command, "LC_ALL=C cat interfaces_* > ./interface/facets_%09d.out", i);
-      system(command);
-      sprintf(command, "rm -f interfaces_*");
-      system(command);
-    }
+    char name_plic[256];
+    sprintf (name_plic, "./interface/plic_%09d.bin", i);
+    output_plic (f, name_plic, i);
 
     if (pid() == 0) {
       fflush(stderr);
@@ -590,9 +587,9 @@ event interface (i += 250) {
       fprintf (log_sim, "%8E %8E\n", t, 1.0*i);
       fclose(log_sim);
     }
-  
+
   }
-  
+
 }
 
 /**
